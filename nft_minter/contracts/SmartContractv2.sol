@@ -1,50 +1,49 @@
 // SPDX-License-Identifier: GPL-3.0
 
-pragma solidity ^0.8.0;
+pragma solidity >=0.7.0 <0.9.0;
 
-import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract PixelHornicorn is ERC721Enumerable, Ownable {
-    using Strings for uint256;
+contract PixelHornicornClubLowerGas is ERC721, Ownable {
+  using Strings for uint256;
+  using Counters for Counters.Counter;
 
-    string public baseURI;
-    string public baseExtension = ".json";
-    string public notRevealedUri;
-    uint256 public cost =  0.09 ether;
-    uint256 public maxSupply = 10000;
-    uint256 public maxMintAmount = 20;
-    uint256 public nftPerAddressLimit = 3;
-    bool public paused = false;
-    bool public onlyWhitelisted = true;
-    address[] public whitelistedAddresses;
+  Counters.Counter private supply;
 
-    mapping (uint256 => bool) public revealed;
-    mapping(address => uint256) public addressMintedBalance;
+  string public uriPrefix = "";
+  string public uriSuffix = ".json";
+  string public hiddenMetadataUri;
+  
+  uint256 public cost = 0.09 ether;
+  uint256 public maxSupply = 10000;
+  uint256 public maxMintAmountPerTx = 1;
+  uint256 public nftPerAddressLimit = 3;
 
-    constructor(
-        string memory _name,
-        string memory _symbol,
-        string memory _initBaseURI,
-        string memory _initNotRevealedUri
-    ) ERC721(_name, _symbol) {
-        setBaseURI(_initBaseURI);
-        setNotRevealedURI(_initNotRevealedUri);
-        // mint(msg.sender, 20);
-    }
+  bool public paused = true;
+  bool public onlyWhitelisted = true;
+  address[] public whitelistedAddresses;
+  
+  mapping (uint256 => bool) public revealed;
+  mapping(address => uint256) public addressMintedBalance;
 
-    // internal
-    function _baseURI() internal view virtual override returns (string memory) {
-        return baseURI;
-    }
+  constructor() ERC721("NAME", "SYMBOL") {
+    setHiddenMetadataUri("ipfs://__CID__/hidden.json");
+    // mint(msg.sender, 20);
+  }
 
-    // public
+  function totalSupply() public view returns (uint256) {
+    return supply.current();
+  }
+
+  // public
     function mint(uint256 _mintAmount) public payable {
-        require(!paused);
-        uint256 supply = totalSupply();
-        require(_mintAmount > 0);
-        require(_mintAmount <= maxMintAmount);
-        require(supply + _mintAmount <= maxSupply);
+        require(!paused, "The contract is paused!");
+        require(msg.value >= cost * _mintAmount, "Insufficient funds!");
+        require(_mintAmount > 0 && _mintAmount <= maxMintAmountPerTx, "Invalid mint amount!");
+        require(supply.current() + _mintAmount <= maxSupply, "Max supply exceeded!");
+        
 
          if (msg.sender != owner()) {
              if (onlyWhitelisted == true) {
@@ -57,8 +56,9 @@ contract PixelHornicorn is ERC721Enumerable, Ownable {
 
         for (uint256 i = 1; i <= _mintAmount; i++) {
             addressMintedBalance[msg.sender]++;
-            _safeMint(msg.sender, supply + i);
-            revealed[supply + i] = true;
+            supply.increment();
+            _safeMint(msg.sender, supply.current());
+            revealed[supply.current()] = true;
         }
     }
 
@@ -72,46 +72,52 @@ contract PixelHornicorn is ERC721Enumerable, Ownable {
     }
 
     function walletOfOwner(address _owner)
-        public
-        view
-        returns (uint256[] memory)
+    public
+    view
+    returns (uint256[] memory)
     {
         uint256 ownerTokenCount = balanceOf(_owner);
-        uint256[] memory tokenIds = new uint256[](ownerTokenCount);
-        for (uint256 i; i < ownerTokenCount; i++) {
-            tokenIds[i] = tokenOfOwnerByIndex(_owner, i);
+        uint256[] memory ownedTokenIds = new uint256[](ownerTokenCount);
+        uint256 currentTokenId = 1;
+        uint256 ownedTokenIndex = 0;
+
+        while (ownedTokenIndex < ownerTokenCount && currentTokenId <= maxSupply) {
+        address currentTokenOwner = ownerOf(currentTokenId);
+
+        if (currentTokenOwner == _owner) {
+            ownedTokenIds[ownedTokenIndex] = currentTokenId;
+
+            ownedTokenIndex++;
         }
-        return tokenIds;
+
+        currentTokenId++;
+        }
+
+        return ownedTokenIds;
     }
 
-    function tokenURI(uint256 tokenId)
-        public
-        view
-        virtual
-        override
-        returns (string memory)
+    function tokenURI(uint256 _tokenId)
+    public
+    view
+    virtual
+    override
+    returns (string memory)
     {
         require(
-            _exists(tokenId),
-            "ERC721Metadata: URI query for nonexistent token"
+        _exists(_tokenId),
+        "ERC721Metadata: URI query for nonexistent token"
         );
 
-        if (revealed[tokenId] == false){
-            return notRevealedUri;
+        if (revealed[_tokenId] == false){
+                return hiddenMetadataUri;
         }
 
         string memory currentBaseURI = _baseURI();
-        return
-            bytes(currentBaseURI).length > 0
-                ? string(
-                    abi.encodePacked(
-                        currentBaseURI,
-                        tokenId.toString(),
-                        baseExtension
-                    )
-                )
-                : "";
+        return bytes(currentBaseURI).length > 0
+            ? string(abi.encodePacked(currentBaseURI, _tokenId.toString(), uriSuffix))
+            : "";
     }
+    
 
     //only owner
     function setNftPerAddressLimit(uint256 _limit) public onlyOwner {
@@ -119,29 +125,26 @@ contract PixelHornicorn is ERC721Enumerable, Ownable {
     }
 
     function setCost(uint256 _newCost) public onlyOwner {
-        cost = _newCost;
+        cost = _newCost; //WEI
     }
 
-    function setmaxMintAmount(uint256 _newmaxMintAmount) public onlyOwner {
-        maxMintAmount = _newmaxMintAmount;
+     function setMaxMintAmountPerTx(uint256 _maxMintAmountPerTx) public onlyOwner {
+        maxMintAmountPerTx = _maxMintAmountPerTx;
     }
 
-    function setNotRevealedURI(string memory _notRevealedURI) public onlyOwner {
-        notRevealedUri = _notRevealedURI;
+    function setHiddenMetadataUri(string memory _hiddenMetadataUri) public onlyOwner {
+        hiddenMetadataUri = _hiddenMetadataUri;
     }
 
-    function setBaseURI(string memory _newBaseURI) public onlyOwner {
-        baseURI = _newBaseURI;
+    function setUriPrefix(string memory _uriPrefix) public onlyOwner {
+        uriPrefix = _uriPrefix;
     }
 
-    function setBaseExtension(string memory _newBaseExtension)
-        public
-        onlyOwner
-    {
-        baseExtension = _newBaseExtension;
+    function setUriSuffix(string memory _uriSuffix) public onlyOwner {
+        uriSuffix = _uriSuffix;
     }
 
-    function pause(bool _state) public onlyOwner {
+    function setPaused(bool _state) public onlyOwner {
         paused = _state;
     }
 
@@ -154,9 +157,10 @@ contract PixelHornicorn is ERC721Enumerable, Ownable {
         whitelistedAddresses = _users;
     }
 
-    function withdraw() public payable onlyOwner {
-        require(payable(msg.sender).send(address(this).balance));
-        (bool success, ) = payable(msg.sender).call{value: address(this).balance}("");
-        require(success);
+    function withdraw() public onlyOwner {
+        (bool os, ) = payable(owner()).call{value: address(this).balance}("");
+        require(os);
     }
+
 }
+
